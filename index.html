@@ -1,1 +1,682 @@
-<!DOCTYPE html>\n<html lang=\
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CORTEX Navigator</title>
+  <style>
+    :root {
+      --bg: #030712;
+      --fg: #cfe6ff;
+      --accent: #5ab4ff;
+      --accent-soft: rgba(90, 180, 255, 0.25);
+      --panel: rgba(8, 16, 30, 0.44);
+      --border: rgba(130, 190, 255, 0.2);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(circle at 20% 10%, #07142b 0%, var(--bg) 45%, #02040a 100%);
+      color: var(--fg);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      user-select: none;
+    }
+    #c { display: block; width: 100vw; height: 100vh; }
+
+    #hud {
+      position: fixed;
+      inset: 16px 16px auto 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      z-index: 20;
+    }
+    #brand {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      opacity: 0.72;
+      text-transform: uppercase;
+      text-shadow: 0 0 16px rgba(90, 180, 255, 0.45);
+    }
+    #layerTag {
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 220ms ease;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(4, 9, 18, 0.38);
+      backdrop-filter: blur(6px);
+    }
+    #layerTag.show { opacity: 0.95; }
+
+    #hint {
+      position: fixed;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: rgba(180, 220, 255, 0.54);
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 20;
+    }
+
+    #editor {
+      position: fixed;
+      right: 18px;
+      top: 50%;
+      transform: translateY(-50%) translateX(16px);
+      width: min(36vw, 420px);
+      height: min(72vh, 560px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 260ms ease, transform 260ms ease;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(170deg, rgba(12, 22, 40, 0.6), rgba(6, 13, 26, 0.45));
+      backdrop-filter: blur(8px);
+      overflow: hidden;
+      z-index: 25;
+    }
+    #editor.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(-50%) translateX(0);
+    }
+    #editorHeader {
+      height: 38px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(200, 228, 255, 0.9);
+    }
+    #editorHeader b { color: #8ec8ff; font-weight: 600; }
+    #editor2d {
+      width: 100%;
+      height: calc(100% - 38px);
+      display: block;
+      cursor: crosshair;
+      background: radial-gradient(circle at 50% 35%, rgba(24, 56, 96, 0.28), rgba(4, 12, 22, 0.18) 60%, rgba(2, 6, 12, 0.14));
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <div id="brand">Cortex · Focus Navigation</div>
+    <div id="layerTag"></div>
+  </div>
+  <div id="hint">Ziehen: orbit · Scroll: zoom · Klick auf Schicht: Fokus · A/D: Schicht wechseln · ESC: zurück</div>
+
+  <section id="editor">
+    <header id="editorHeader">
+      <span><b>2D-Layer</b> Editor</span>
+      <span id="editorMeta"></span>
+    </header>
+    <canvas id="editor2d"></canvas>
+  </section>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    const canvas = document.getElementById('c');
+    const layerTag = document.getElementById('layerTag');
+    const editor = document.getElementById('editor');
+    const editor2d = document.getElementById('editor2d');
+    const editorMeta = document.getElementById('editorMeta');
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setClearColor(0x020510, 1);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x020510, 0.0085);
+
+    const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 1200);
+    camera.position.set(0, 0, 112);
+
+    const group = new THREE.Group();
+    scene.add(group);
+
+    function glowTexture(size = 128) {
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const h = size / 2;
+      const g = ctx.createRadialGradient(h, h, 0, h, h, h);
+      g.addColorStop(0.0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.15, 'rgba(255,255,255,0.78)');
+      g.addColorStop(0.45, 'rgba(255,255,255,0.18)');
+      g.addColorStop(1.0, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+      return new THREE.CanvasTexture(c);
+    }
+    const GLOW = glowTexture();
+
+    const LAYER_DEFS = [
+      { count: 12, cx: -56, sy: 20, sz: 20, name: 'Input' },
+      { count: 28, cx: -30, sy: 30, sz: 30, name: 'Encode' },
+      { count: 42, cx:   0, sy: 34, sz: 34, name: 'Core' },
+      { count: 30, cx:  30, sy: 30, sz: 30, name: 'Decode' },
+      { count: 16, cx:  56, sy: 20, sz: 20, name: 'Output' },
+    ];
+
+    const nodes = [];
+    const layerData = LAYER_DEFS.map((d, i) => ({
+      ...d,
+      index: i,
+      nodes: [],
+      customNodes2D: [],
+      customEdges2D: [],
+      hovered: false,
+      focused: false,
+      helperMesh: null,
+      label: `L${i} · ${d.name}`,
+    }));
+
+    const sphereSmall = new THREE.SphereGeometry(1, 11, 11);
+    const sphereHub = new THREE.SphereGeometry(1, 16, 16);
+
+    layerData.forEach((layer, li) => {
+      const t = li / (layerData.length - 1);
+      const helperGeo = new THREE.BoxGeometry(12, layer.sy + 10, layer.sz + 10);
+      const helperMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color().setHSL(0.56 - t * 0.45, 0.7, 0.5),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const helperMesh = new THREE.Mesh(helperGeo, helperMat);
+      helperMesh.position.set(layer.cx, 0, 0);
+      helperMesh.userData.layerIndex = li;
+      group.add(helperMesh);
+      layer.helperMesh = helperMesh;
+
+      for (let i = 0; i < layer.count; i++) {
+        const isHub = Math.random() < 0.07;
+        const x = layer.cx + (Math.random() - 0.5) * 8;
+        const y = (Math.random() - 0.5) * layer.sy;
+        const z = (Math.random() - 0.5) * layer.sz;
+        const hue = t < 0.5 ? 0.53 + Math.random() * 0.12 : 0.02 + Math.random() * 0.08;
+        const lit = isHub ? 0.74 : 0.42 + Math.random() * 0.26;
+        const col = new THREE.Color().setHSL(hue, 0.95, lit);
+        const radius = isHub ? 1.4 + Math.random() * 0.4 : 0.4 + Math.random() * 0.5;
+
+        const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.9 });
+        const mesh = new THREE.Mesh(isHub ? sphereHub : sphereSmall, mat);
+        mesh.position.set(x, y, z);
+        mesh.scale.setScalar(radius);
+        mesh.userData.layerIndex = li;
+        group.add(mesh);
+
+        const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: GLOW,
+          color: col.clone(),
+          blending: THREE.AdditiveBlending,
+          transparent: true,
+          depthWrite: false,
+          opacity: isHub ? 0.85 : 0.5,
+        }));
+        const gs = isHub ? 13 : 4.8 + radius * 4;
+        glow.scale.set(gs, gs, 1);
+        glow.position.copy(mesh.position);
+        group.add(glow);
+
+        const node = {
+          mesh,
+          glow,
+          col,
+          hue,
+          layer: li,
+          r: radius,
+          pos: mesh.position.clone(),
+          phase: Math.random() * Math.PI * 2,
+          spd: 0.8 + Math.random() * 1.5,
+          activ: 0,
+        };
+        nodes.push(node);
+        layer.nodes.push(node);
+      }
+    });
+
+    const edgePairs = [];
+    const edgePos = [];
+    const edgeCol = [];
+    const MAX_D = 28;
+
+    for (let i = 0; i < nodes.length; i++) {
+      let conn = 0;
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const d = a.pos.distanceTo(b.pos);
+        const layerGap = Math.abs(a.layer - b.layer);
+        if (d < MAX_D && layerGap <= 2 && conn < 9 && Math.random() > 0.23) {
+          edgePairs.push([i, j]);
+          edgePos.push(a.pos.x, a.pos.y, a.pos.z, b.pos.x, b.pos.y, b.pos.z);
+          edgeCol.push(a.col.r, a.col.g, a.col.b, b.col.r, b.col.g, b.col.b);
+          conn++;
+        }
+      }
+    }
+
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgePos, 3));
+    edgeGeo.setAttribute('color', new THREE.Float32BufferAttribute(edgeCol, 3));
+    const edgeMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.15,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    group.add(new THREE.LineSegments(edgeGeo, edgeMat));
+
+    const SIG_N = 90;
+    const sPos = new Float32Array(SIG_N * 3);
+    const sCol = new Float32Array(SIG_N * 3);
+    const sGeo = new THREE.BufferGeometry();
+    sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+    sGeo.setAttribute('color', new THREE.BufferAttribute(sCol, 3));
+    const sMat = new THREE.PointsMaterial({
+      size: 2.6,
+      map: GLOW,
+      vertexColors: true,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.9,
+    });
+    group.add(new THREE.Points(sGeo, sMat));
+
+    function spawnSignal(idx) {
+      if (!edgePairs.length) return null;
+      const [aI, bI] = edgePairs[Math.floor(Math.random() * edgePairs.length)];
+      const a = nodes[aI], b = nodes[bI];
+      return {
+        idx,
+        from: a.pos.clone(),
+        to: b.pos.clone(),
+        toNode: bI,
+        col: a.col.clone().lerp(b.col, 0.5),
+        t: Math.random(),
+        spd: 0.006 + Math.random() * 0.012,
+      };
+    }
+    const signals = Array.from({ length: SIG_N }, (_, i) => spawnSignal(i));
+
+    const DUST_N = 230;
+    const dPos = new Float32Array(DUST_N * 3);
+    const dVel = new Float32Array(DUST_N * 3);
+    const dCol = new Float32Array(DUST_N * 3);
+    for (let i = 0; i < DUST_N; i++) {
+      dPos[i * 3] = (Math.random() - 0.5) * 220;
+      dPos[i * 3 + 1] = (Math.random() - 0.5) * 160;
+      dPos[i * 3 + 2] = (Math.random() - 0.5) * 180;
+      dVel[i * 3] = (Math.random() - 0.5) * 0.01;
+      dVel[i * 3 + 1] = (Math.random() - 0.5) * 0.01;
+      dVel[i * 3 + 2] = (Math.random() - 0.5) * 0.008;
+      const c = new THREE.Color().setHSL(Math.random() > 0.5 ? 0.58 : 0.06, 0.9, 0.45);
+      dCol[i * 3] = c.r;
+      dCol[i * 3 + 1] = c.g;
+      dCol[i * 3 + 2] = c.b;
+    }
+    const dGeo = new THREE.BufferGeometry();
+    dGeo.setAttribute('position', new THREE.BufferAttribute(dPos, 3));
+    dGeo.setAttribute('color', new THREE.BufferAttribute(dCol, 3));
+    scene.add(new THREE.Points(dGeo, new THREE.PointsMaterial({
+      size: 0.65,
+      vertexColors: true,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+    })));
+
+    // Navigation state
+    let dragging = false;
+    let lastX = 0, lastY = 0;
+    let yaw = 0.24, pitch = -0.15;
+    let targetYaw = yaw, targetPitch = pitch;
+    let zoom = 108, targetZoom = 108;
+    const minZoom = 30, maxZoom = 180;
+
+    let focusLayerIndex = null;
+    const cameraTarget = new THREE.Vector3(0, 0, 0);
+    const focusCameraPos = new THREE.Vector3();
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    function pointerXY(e) {
+      return e.touches ? [e.touches[0].clientX, e.touches[0].clientY] : [e.clientX, e.clientY];
+    }
+
+    function onPointerDown(e) {
+      const [x, y] = pointerXY(e);
+      dragging = true;
+      lastX = x;
+      lastY = y;
+    }
+
+    function onPointerMove(e) {
+      const [x, y] = pointerXY(e);
+      mouse.x = (x / innerWidth) * 2 - 1;
+      mouse.y = -(y / innerHeight) * 2 + 1;
+
+      if (!dragging || focusLayerIndex !== null) return;
+      const dx = (x - lastX) * 0.0046;
+      const dy = (y - lastY) * 0.0046;
+      targetYaw += dx;
+      targetPitch = THREE.MathUtils.clamp(targetPitch + dy, -1.3, 1.3);
+      lastX = x;
+      lastY = y;
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function onPointerUp() { dragging = false; }
+
+    canvas.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('mousemove', onPointerMove);
+    window.addEventListener('mouseup', onPointerUp);
+
+    canvas.addEventListener('touchstart', e => { onPointerDown(e); e.preventDefault(); }, { passive: false });
+    canvas.addEventListener('touchmove', e => { onPointerMove(e); e.preventDefault(); }, { passive: false });
+    canvas.addEventListener('touchend', onPointerUp);
+
+    canvas.addEventListener('wheel', e => {
+      targetZoom = THREE.MathUtils.clamp(targetZoom + e.deltaY * 0.085, minZoom, maxZoom);
+    }, { passive: true });
+
+    function setHoverLayer(index) {
+      layerData.forEach((l, i) => l.hovered = (index === i));
+      if (index !== null) {
+        layerTag.textContent = `${layerData[index].label}`;
+        layerTag.classList.add('show');
+      } else {
+        layerTag.classList.remove('show');
+      }
+    }
+
+    function enterLayerFocus(index) {
+      focusLayerIndex = index;
+      layerData.forEach((l, i) => l.focused = (i === index));
+      const lay = layerData[index];
+      targetZoom = 54;
+      focusCameraPos.set(lay.cx - 34, 0, 0); // Kamera links der Schicht
+      cameraTarget.set(lay.cx, 0, 0);
+      editor.classList.add('active');
+      renderEditor2D();
+    }
+
+    function leaveLayerFocus() {
+      focusLayerIndex = null;
+      layerData.forEach(l => l.focused = false);
+      editor.classList.remove('active');
+      cameraTarget.set(0, 0, 0);
+      targetZoom = 108;
+    }
+
+    canvas.addEventListener('click', e => {
+      mouse.x = (e.clientX / innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+
+      if (focusLayerIndex !== null) {
+        const nodeHits = raycaster.intersectObjects(layerData[focusLayerIndex].nodes.map(n => n.mesh));
+        if (nodeHits.length) {
+          const hitNode = layerData[focusLayerIndex].nodes.find(n => n.mesh === nodeHits[0].object);
+          if (hitNode) hitNode.activ = Math.min(hitNode.activ + 1.3, 2.2);
+        }
+        return;
+      }
+
+      const zoomedOut = camera.position.distanceTo(cameraTarget) > 76;
+      if (!zoomedOut) return;
+
+      const hits = raycaster.intersectObjects(layerData.map(l => l.helperMesh));
+      if (hits.length) {
+        const index = hits[0].object.userData.layerIndex;
+        enterLayerFocus(index);
+      }
+    });
+
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && focusLayerIndex !== null) leaveLayerFocus();
+      if (focusLayerIndex === null) return;
+      if (e.key.toLowerCase() === 'a' || e.key === 'ArrowLeft') {
+        enterLayerFocus((focusLayerIndex - 1 + layerData.length) % layerData.length);
+      }
+      if (e.key.toLowerCase() === 'd' || e.key === 'ArrowRight') {
+        enterLayerFocus((focusLayerIndex + 1) % layerData.length);
+      }
+    });
+
+    // 2D layer editor
+    const editState = {
+      selectedNode: null,
+      hoverNode: null,
+      scale: 1,
+    };
+
+    function editorPointerPos(evt) {
+      const r = editor2d.getBoundingClientRect();
+      return {
+        x: (evt.clientX - r.left) / r.width,
+        y: (evt.clientY - r.top) / r.height,
+      };
+    }
+
+    function nearestCustomNode(layer, p, radius = 0.03) {
+      let idx = -1;
+      let min = Infinity;
+      for (let i = 0; i < layer.customNodes2D.length; i++) {
+        const n = layer.customNodes2D[i];
+        const d = Math.hypot(n.x - p.x, n.y - p.y);
+        if (d < radius && d < min) {
+          min = d;
+          idx = i;
+        }
+      }
+      return idx;
+    }
+
+    editor2d.addEventListener('mousemove', evt => {
+      if (focusLayerIndex === null) return;
+      const layer = layerData[focusLayerIndex];
+      editState.hoverNode = nearestCustomNode(layer, editorPointerPos(evt), 0.04);
+      renderEditor2D();
+    });
+
+    editor2d.addEventListener('click', evt => {
+      if (focusLayerIndex === null) return;
+      const layer = layerData[focusLayerIndex];
+      const p = editorPointerPos(evt);
+      const hit = nearestCustomNode(layer, p, 0.04);
+
+      if (hit >= 0) {
+        if (editState.selectedNode !== null && editState.selectedNode !== hit) {
+          layer.customEdges2D.push([editState.selectedNode, hit]);
+          editState.selectedNode = null;
+        } else {
+          editState.selectedNode = hit;
+        }
+      } else {
+        layer.customNodes2D.push({ x: p.x, y: p.y });
+      }
+      renderEditor2D();
+    });
+
+    function renderEditor2D() {
+      if (focusLayerIndex === null) return;
+      const layer = layerData[focusLayerIndex];
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const w = Math.floor(editor2d.clientWidth * dpr);
+      const h = Math.floor(editor2d.clientHeight * dpr);
+      if (editor2d.width !== w || editor2d.height !== h) {
+        editor2d.width = w;
+        editor2d.height = h;
+      }
+      const ctx = editor2d.getContext('2d');
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, 'rgba(25,62,108,0.22)');
+      grad.addColorStop(1, 'rgba(4,11,20,0.2)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = 'rgba(125,180,255,0.14)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 26 * dpr) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 26 * dpr) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      layer.customEdges2D.forEach(([a, b]) => {
+        const na = layer.customNodes2D[a], nb = layer.customNodes2D[b];
+        if (!na || !nb) return;
+        ctx.strokeStyle = 'rgba(105,190,255,0.7)';
+        ctx.lineWidth = 1.6 * dpr;
+        ctx.beginPath();
+        ctx.moveTo(na.x * w, na.y * h);
+        ctx.lineTo(nb.x * w, nb.y * h);
+        ctx.stroke();
+      });
+
+      layer.customNodes2D.forEach((n, i) => {
+        const x = n.x * w, y = n.y * h;
+        const selected = editState.selectedNode === i;
+        const hovered = editState.hoverNode === i;
+        const rad = (hovered ? 6 : 4.6) * dpr;
+        ctx.beginPath();
+        ctx.arc(x, y, rad, 0, Math.PI * 2);
+        ctx.fillStyle = selected ? 'rgba(255,170,96,0.95)' : 'rgba(122,201,255,0.92)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(x, y, rad * 2.4, 0, Math.PI * 2);
+        ctx.strokeStyle = selected ? 'rgba(255,170,96,0.3)' : 'rgba(122,201,255,0.18)';
+        ctx.lineWidth = 1.2 * dpr;
+        ctx.stroke();
+      });
+
+      editorMeta.textContent = `${layer.customNodes2D.length} Neuronen · ${layer.customEdges2D.length} Verbindungen`;
+    }
+
+    let t = 0;
+    function animate() {
+      requestAnimationFrame(animate);
+      t += 0.011;
+
+      yaw += (targetYaw - yaw) * 0.08;
+      pitch += (targetPitch - pitch) * 0.08;
+      zoom += (targetZoom - zoom) * 0.08;
+
+      if (focusLayerIndex === null) {
+        const x = Math.cos(yaw) * Math.cos(pitch) * zoom;
+        const y = Math.sin(pitch) * zoom;
+        const z = Math.sin(yaw) * Math.cos(pitch) * zoom;
+        camera.position.set(x, y, z);
+        camera.lookAt(cameraTarget);
+      } else {
+        camera.position.lerp(focusCameraPos, 0.085);
+        camera.lookAt(cameraTarget);
+      }
+
+      const zoomedOut = camera.position.distanceTo(cameraTarget) > 76;
+      if (zoomedOut && focusLayerIndex === null) {
+        raycaster.setFromCamera(mouse, camera);
+        const layerHits = raycaster.intersectObjects(layerData.map(l => l.helperMesh));
+        setHoverLayer(layerHits.length ? layerHits[0].object.userData.layerIndex : null);
+      } else {
+        setHoverLayer(null);
+      }
+
+      layerData.forEach((layer, idx) => {
+        const targetOpacity = layer.focused ? 0.14 : (layer.hovered && zoomedOut ? 0.09 : 0);
+        layer.helperMesh.material.opacity += (targetOpacity - layer.helperMesh.material.opacity) * 0.22;
+
+        const fade = focusLayerIndex === null ? 1 : (focusLayerIndex === idx ? 1 : 0.14);
+        layer.nodes.forEach(n => {
+          const pulse = 0.5 + 0.5 * Math.sin(t * n.spd + n.phase);
+          const scale = n.r * (1 + pulse * 0.25 + n.activ * 0.55);
+          n.mesh.scale.setScalar(scale);
+          n.mesh.material.opacity = (0.58 + pulse * 0.35) * fade;
+          n.mesh.material.color.setHSL(n.hue, 1, Math.min(0.4 + pulse * 0.34 + n.activ * 0.3, 1));
+
+          n.glow.material.opacity = (0.16 + pulse * 0.42 + n.activ * 0.35) * fade;
+          n.glow.scale.setScalar((n.r < 1 ? 3.8 : 11) + pulse * 3.5 + n.activ * 6);
+          n.activ = Math.max(0, n.activ - 0.02);
+        });
+      });
+
+      edgeMat.opacity = focusLayerIndex === null ? 0.14 : 0.07;
+
+      for (let i = 0; i < signals.length; i++) {
+        const s = signals[i] || spawnSignal(i);
+        if (!s) continue;
+        s.t += s.spd;
+        if (s.t >= 1) {
+          const nd = nodes[s.toNode];
+          if (nd) nd.activ = Math.min(nd.activ + 0.4, 2.2);
+          signals[i] = spawnSignal(i);
+          continue;
+        }
+        const p = s.from.clone().lerp(s.to, s.t);
+        sPos[i * 3] = p.x;
+        sPos[i * 3 + 1] = p.y;
+        sPos[i * 3 + 2] = p.z;
+        sCol[i * 3] = s.col.r;
+        sCol[i * 3 + 1] = s.col.g;
+        sCol[i * 3 + 2] = s.col.b;
+      }
+      sGeo.attributes.position.needsUpdate = true;
+      sGeo.attributes.color.needsUpdate = true;
+
+      for (let i = 0; i < DUST_N; i++) {
+        dPos[i * 3] += dVel[i * 3];
+        dPos[i * 3 + 1] += dVel[i * 3 + 1];
+        dPos[i * 3 + 2] += dVel[i * 3 + 2];
+        if (Math.abs(dPos[i * 3]) > 110) dVel[i * 3] *= -1;
+        if (Math.abs(dPos[i * 3 + 1]) > 80) dVel[i * 3 + 1] *= -1;
+        if (Math.abs(dPos[i * 3 + 2]) > 90) dVel[i * 3 + 2] *= -1;
+      }
+      dGeo.attributes.position.needsUpdate = true;
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      renderEditor2D();
+    });
+  </script>
+</body>
+</html>
